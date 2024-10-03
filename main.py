@@ -2,85 +2,75 @@ import yfinance as yf
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow import keras
-from tensorflow.keras import layers # type: ignore
+from statsmodels.tsa.arima.model import ARIMA
+from datetime import datetime, timedelta
 import logging
+import requests
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 
 # Fetch historical stock data
 def fetch_data(ticker):
-    data = yf.download(ticker, start="2010-01-01", end="2023-01-01")
-    return data['Close'].values
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365*2)  # 2 years of historical data
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Close']
 
-# Preprocess the data
-def preprocess_data(data):
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
-    return scaled_data, scaler
-
-# Create the dataset for training
-def create_dataset(data, time_step=1):
-    X, y = [], []
-    for i in range(len(data) - time_step - 1):
-        X.append(data[i:(i + time_step), 0])
-        y.append(data[i + time_step, 0])
-    return np.array(X), np.array(y)
-
-# Build the model
-def build_model(input_shape):
-    model = keras.Sequential()
-    model.add(layers.LSTM(50, return_sequences=True, input_shape=input_shape))
-    model.add(layers.LSTM(50, return_sequences=False))
-    model.add(layers.Dense(25))
-    model.add(layers.Dense(1))
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+# Get sentiment from recent news
+def get_sentiment(ticker):
+    url = f"https://finviz.com/quote.ashx?t={ticker}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    news_table = soup.find(id='news-table')
+    if news_table:
+        recent_news = news_table.find_all('tr')[:5]  # Get the 5 most recent news items
+        sentiment_score = sum(['positive' in tr.text.lower() for tr in recent_news]) - sum(['negative' in tr.text.lower() for tr in recent_news])
+        return sentiment_score / 5  # Normalize to [-1, 1]
+    return 0
 
 # Predict function
-def predict(ticker):
-    logging.info(f"Starting prediction for {ticker}")
-    data = fetch_data(ticker)
-    logging.info(f"Fetched data shape: {data.shape}")
-    
-    scaled_data, scaler = preprocess_data(data)
-    logging.info(f"Scaled data shape: {scaled_data.shape}")
-    
-    time_step = 60
-    X, y = create_dataset(scaled_data, time_step)
-    X = X.reshape(X.shape[0], X.shape[1], 1)
-    logging.info(f"X shape: {X.shape}, y shape: {y.shape}")
-
-    train_size = int(len(X) * 0.8)
-    X_train, X_test = X[:train_size], X[train_size:]
-    y_train, y_test = y[:train_size], y[train_size:]
-    logging.info(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
-
+def predict(ticker, forecast_days=30):
+    logging.info(f"Starting prediction for {ticker} with {forecast_days} days forecast")
     try:
-        model = keras.models.load_model('model.h5')
-        model.compile(optimizer='adam', loss='mean_squared_error')
-        logging.info("Loaded existing model")
-    except:
-        model = build_model((X_train.shape[1], 1))
-        model.fit(X_train, y_train, batch_size=1, epochs=10, verbose=1)
-        model.save('model.h5')
-        logging.info("Built and trained new model")
+        data = fetch_data(ticker)
+        logging.info(f"Fetched data shape: {data.shape}")
 
-    predictions = model.predict(X_test)
-    logging.info(f"Raw predictions shape: {predictions.shape}")
-    predictions = scaler.inverse_transform(predictions)
-    logging.info(f"Inverse transformed predictions shape: {predictions.shape}")
+        # Fit ARIMA model
+        model = ARIMA(data, order=(5,1,0))
+        model_fit = model.fit()
 
-    original_data = data[-len(predictions):]
-    logging.info(f"Original data shape: {original_data.shape}")
+        # Make predictions
+        forecast = model_fit.forecast(steps=forecast_days)
+        
+        # Add volatility
+        volatility = data.pct_change().std()
+        noise = np.random.normal(0, volatility, forecast_days)
+        forecast = forecast * (1 + noise)
 
-    original_list = original_data.flatten().tolist()
-    predictions_list = predictions.flatten().tolist()
-    
-    logging.info(f"Original data (first 5): {original_list[:5]}")
-    logging.info(f"Predictions (first 5): {predictions_list[:5]}")
-    
-    return original_list, predictions_list
+        # Adjust forecast based on sentiment
+        sentiment = get_sentiment(ticker)
+        sentiment_factor = 1 + (sentiment * 0.01)  # 1% adjustment per sentiment unit
+        forecast = forecast * sentiment_factor
+
+        historical_dates = data.index[-365:].strftime('%Y-%m-%d').tolist()
+        historical_data = data.values[-365:].tolist()
+        forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=forecast_days).strftime('%Y-%m-%d').tolist()
+        forecast_data = forecast.tolist()
+
+        logging.info(f"Historical data shape: {len(historical_data)}")
+        logging.info(f"Forecasted prices shape: {len(forecast_data)}")
+
+        return {
+            'historical_dates': historical_dates,
+            'historical_data': historical_data,
+            'forecast_dates': forecast_dates,
+            'forecast_data': forecast_data
+        }
+    except Exception as e:
+        logging.error(f"Error in predict function: {str(e)}")
+        return None
 
 # # Example usage
 # if __name__ == "__main__":
