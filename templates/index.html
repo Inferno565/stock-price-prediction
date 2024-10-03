@@ -18,6 +18,7 @@
     <script>
         document.getElementById('predict').onclick = function() {
             const ticker = document.getElementById('ticker').value;
+            console.log('Predicting for ticker:', ticker);
             fetch('/predict', {
                 method: 'POST',
                 headers: {
@@ -27,19 +28,65 @@
             })
             .then(response => response.json())
             .then(data => {
+                console.log('Received data:', data);
+                if (!data.original || !data.predictions) {
+                    console.error('Invalid data format:', data);
+                    alert('Invalid data received from server');
+                    return;
+                }
+                console.log('Original data length:', data.original.length);
+                console.log('Predictions length:', data.predictions.length);
+                console.log('Original data (first 5):', data.original.slice(0, 5));
+                console.log('Predictions (first 5):', data.predictions.slice(0, 5));
+                
                 const ctx = document.getElementById('predictionChart').getContext('2d');
                 new Chart(ctx, {
                     type: 'line',
                     data: {
-                        labels: data.map((_, index) => index + 1),
-                        datasets: [{
-                            label: 'Predicted Prices',
-                            data: data,
-                            borderColor: 'rgba(75, 192, 192, 1)',
-                            fill: false
-                        }]
+                        labels: Array.from({length: Math.max(data.original.length, data.predictions.length)}, (_, i) => i + 1),
+                        datasets: [
+                            {
+                                label: 'Original Prices',
+                                data: data.original,
+                                borderColor: 'rgba(75, 192, 192, 1)',
+                                fill: false
+                            },
+                            {
+                                label: 'Predicted Prices',
+                                data: data.predictions,
+                                borderColor: 'rgba(255, 99, 132, 1)',
+                                fill: false
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        title: {
+                            display: true,
+                            text: `Stock Price Prediction for ${ticker}`
+                        },
+                        scales: {
+                            x: {
+                                display: true,
+                                title: {
+                                    display: true,
+                                    text: 'Time'
+                                }
+                            },
+                            y: {
+                                display: true,
+                                title: {
+                                    display: true,
+                                    text: 'Price'
+                                }
+                            }
+                        }
                     }
                 });
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                alert('An error occurred while fetching the prediction data.');
             });
         };
     </script>
