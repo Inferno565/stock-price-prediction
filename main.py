@@ -17,18 +17,6 @@ def fetch_data(ticker):
     data = yf.download(ticker, start=start_date, end=end_date)
     return data['Close']
 
-# Get sentiment from recent news
-def get_sentiment(ticker):
-    url = f"https://finviz.com/quote.ashx?t={ticker}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    news_table = soup.find(id='news-table')
-    if news_table:
-        recent_news = news_table.find_all('tr')[:5]  # Get the 5 most recent news items
-        sentiment_score = sum(['positive' in tr.text.lower() for tr in recent_news]) - sum(['negative' in tr.text.lower() for tr in recent_news])
-        return sentiment_score / 5  # Normalize to [-1, 1]
-    return 0
 
 # Predict function
 def predict(ticker, forecast_days=30):
@@ -48,11 +36,6 @@ def predict(ticker, forecast_days=30):
         volatility = data.pct_change().std()
         noise = np.random.normal(0, volatility, forecast_days)
         forecast = forecast * (1 + noise)
-
-        # Adjust forecast based on sentiment
-        sentiment = get_sentiment(ticker)
-        sentiment_factor = 1 + (sentiment * 0.01)  # 1% adjustment per sentiment unit
-        forecast = forecast * sentiment_factor
 
         historical_dates = data.index[-365:].strftime('%Y-%m-%d').tolist()
         historical_data = data.values[-365:].tolist()
