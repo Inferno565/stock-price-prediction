@@ -7,6 +7,11 @@
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        .positive { color: green; }
+        .negative { color: red; }
+        .neutral { color: gray; }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -21,6 +26,14 @@
                 <canvas id="forecastChart"></canvas>
             </div>
         </div>
+        <div class="mt-3">
+            <h3>News Sentiment</h3>
+            <p id="sentimentValue"></p>
+        </div>
+        <div class="mt-3">
+            <h3>Recent News Headlines</h3>
+            <ul id="newsList" class="list-group"></ul>
+        </div>
     </div>
 
     <script>
@@ -34,12 +47,7 @@
                 },
                 body: JSON.stringify({ ticker: ticker })
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
+            .then(response => response.json())
             .then(data => {
                 console.log('Received data:', data);
                 if (data.error) {
@@ -53,6 +61,41 @@
                     return;
                 }
                 
+                // Display sentiment
+                const sentimentElement = document.getElementById('sentimentValue');
+                const sentiment = data.sentiment;
+                if (sentiment !== undefined && sentiment !== null) {
+                    let sentimentText = `Sentiment: ${sentiment.toFixed(2)} `;
+                    if (sentiment > 0) {
+                        sentimentText += '(Positive)';
+                        sentimentElement.style.color = 'green';
+                    } else if (sentiment < 0) {
+                        sentimentText += '(Negative)';
+                        sentimentElement.style.color = 'red';
+                    } else {
+                        sentimentText += '(Neutral)';
+                        sentimentElement.style.color = 'gray';
+                    }
+                    sentimentElement.textContent = sentimentText;
+                } else {
+                    sentimentElement.textContent = 'Sentiment: Not available';
+                    sentimentElement.style.color = 'gray';
+                }
+
+                // Display news headlines
+                const newsList = document.getElementById('newsList');
+                newsList.innerHTML = '';
+                data.news_data.forEach(news => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item';
+                    const sentimentClass = news.sentiment > 0 ? 'positive' : (news.sentiment < 0 ? 'negative' : 'neutral');
+                    li.innerHTML = `
+                        <strong>${news.date} ${news.time}</strong>: ${news.title}
+                        <span class="${sentimentClass}"> (Sentiment: ${news.sentiment.toFixed(2)})</span>
+                    `;
+                    newsList.appendChild(li);
+                });
+
                 // Create historical chart
                 const historicalCtx = document.getElementById('historicalChart').getContext('2d');
                 new Chart(historicalCtx, {
