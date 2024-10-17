@@ -1,0 +1,13 @@
+'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'BRK-A', 'NVDA', 'JPM', 'JNJ
+
+
+
+Close price
+Open price
+High price
+Low price
+Volume
+50-day Simple Moving Average (SMA)
+200-day Simple Moving Average (SMA)
+Relative Strength Index (RSI)
+Moving Average Convergence Divergence (MACD)

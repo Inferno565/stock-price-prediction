@@ -1,25 +1,25 @@
 import logging
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 from datetime import datetime, timedelta
 import traceback
 import requests
 from bs4 import BeautifulSoup
 from textblob import TextBlob
 import yfinance as yf
-from pmdarima import auto_arima
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+import pickle
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 def fetch_data(ticker):
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365*5)  # 5 years of historical data
+    start_date = end_date - timedelta(days=365*2)  # 2 years of historical data
     data = yf.download(ticker, start=start_date, end=end_date)
     return data
 
@@ -82,105 +82,78 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd - signal_line
 
-def find_best_arima_model(data):
-    model = auto_arima(data, start_p=1, start_q=1, max_p=5, max_q=5, m=7,
-                       start_P=0, seasonal=True, d=1, D=1, trace=True,
-                       error_action='ignore', suppress_warnings=True, stepwise=True)
-    return model.order, model.seasonal_order
+def create_sequences(data, seq_length):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:(i + seq_length)])
+        y.append(data[i + seq_length, 0])  # 0 index for 'Close' price
+    return np.array(X), np.array(y)
+
+def build_lstm_model(input_shape):
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=input_shape),
+        LSTM(50, return_sequences=False),
+        Dense(25),
+        Dense(1)
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+    return model
 
 def predict(ticker, forecast_days=30):
     try:
+        # Load the pre-trained model and scaler
+        model = load_model(f'{ticker}_lstm_model.h5')
+        with open(f'{ticker}_scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+
+        # Fetch recent data for prediction
         data = fetch_data(ticker)
-        if data.empty:
-            logger.warning(f"No historical data found for ticker {ticker}")
-            return None
-
-        news_data = fetch_news_sentiment(ticker)
-        
-        if not news_data:
-            logger.warning(f"No news data found for ticker {ticker}")
-            sentiment = 0
-        else:
-            sentiment = np.mean([item['sentiment'] for item in news_data])
-        
-        # Preprocess data
         data = preprocess_data(data)
-        
-        # Split data into features (X) and target (y)
-        X = data[['Open', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', 'RSI', 'MACD']]
-        y = data['Close']
-        
-        # Train-Test split (80% train, 20% test)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-        
-        # Find best ARIMA model
-        best_order, best_seasonal_order = find_best_arima_model(y_train)
-        
-        # Fit SARIMAX model
-        model = SARIMAX(y_train, exog=X_train, order=best_order, seasonal_order=best_seasonal_order)
-        model_fit = model.fit()
 
-        # Make predictions for the test set
-        predictions = model_fit.forecast(steps=len(y_test), exog=X_test)
+        # Prepare data for LSTM
+        features = ['Close', 'Open', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', 'RSI', 'MACD']
+        dataset = data[features].values
+        scaled_data = scaler.transform(dataset)
 
-        # Calculate accuracy metrics
-        mse = mean_squared_error(y_test, predictions)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_test, predictions)
-        mape = np.mean(np.abs((y_test - predictions) / y_test)) * 100
+        # Create the last sequence for prediction
+        seq_length = 60
+        last_sequence = scaled_data[-seq_length:]
 
-        # Print accuracy metrics
-        logger.info(f"Mean Squared Error (MSE): {mse}")
-        logger.info(f"Root Mean Squared Error (RMSE): {rmse}")
-        logger.info(f"Mean Absolute Error (MAE): {mae}")
-        logger.info(f"Mean Absolute Percentage Error (MAPE): {mape}%")
+        # Forecast future prices
+        forecast = []
+        for _ in range(forecast_days):
+            next_pred = model.predict(last_sequence.reshape(1, seq_length, len(features)))
+            forecast.append(next_pred[0, 0])
+            last_sequence = np.roll(last_sequence, -1, axis=0)
+            last_sequence[-1] = next_pred
 
-        # Prepare data for future forecast
-        last_date = data.index[-1]
-        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_days)
-        future_exog = pd.DataFrame(index=future_dates, columns=X.columns)
-        
-        # Fill future exogenous data with last known values (you may want to improve this)
-        for col in future_exog.columns:
-            future_exog[col] = X[col].iloc[-1]
+        # Inverse transform forecast
+        forecast = scaler.inverse_transform(np.hstack([np.array(forecast).reshape(-1, 1), np.zeros((len(forecast), len(features)-1))]))[:, 0]
 
-        # Make predictions for the future (forecast)
-        forecast = model_fit.forecast(steps=forecast_days, exog=future_exog)
-        
+        # Fetch news sentiment
+        news_data = fetch_news_sentiment(ticker)
+        sentiment = np.mean([item['sentiment'] for item in news_data]) if news_data else 0
+
         # Add volatility and sentiment adjustment
-        volatility = np.std(y.pct_change())
+        volatility = np.std(data['Close'].pct_change())
         noise = np.random.normal(0, volatility, forecast_days)
-        sentiment_adjustment = sentiment * 0.01  # Adjust the impact of sentiment
+        sentiment_adjustment = sentiment * 0.01
 
-        logger.info(f"Forecast shape: {forecast.shape}")
-        logger.info(f"Noise shape: {noise.shape}")
-        logger.info(f"Sentiment adjustment: {sentiment_adjustment}")
-
-        # Perform element-wise multiplication
         forecast = forecast * (1 + noise + sentiment_adjustment)
 
-        historical_dates = y.index[-365:].strftime('%Y-%m-%d').tolist()
-        historical_data = y.values[-365:].tolist()
-        forecast_dates = future_dates.strftime('%Y-%m-%d').tolist()
-        forecast_data = forecast.tolist()
-
-        # Helper function to convert NaN to None
-        def nan_to_none(value):
-            return None if np.isnan(value) else float(value)
+        historical_dates = data.index[-365:].strftime('%Y-%m-%d').tolist()
+        historical_data = data['Close'].values[-365:].tolist()
+        forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=forecast_days).strftime('%Y-%m-%d').tolist()
 
         return {
             'historical_dates': historical_dates,
             'historical_data': historical_data,
             'forecast_dates': forecast_dates,
-            'forecast_data': [nan_to_none(x) for x in forecast_data],
+            'forecast_data': forecast.tolist(),
             'sentiment': float(sentiment),
-            'news_data': news_data[:10],  # Return only the 10 most recent news items
-            'accuracy_metrics': {
-                'mse': nan_to_none(mse),
-                'rmse': nan_to_none(rmse),
-                'mae': nan_to_none(mae),
-                'mape': nan_to_none(mape)
-            }
+            'news_data': news_data[:10],
+            'last_close_price': float(data['Close'].iloc[-1]),
+            'next_day_prediction': float(forecast[0])
         }
 
     except Exception as e:
