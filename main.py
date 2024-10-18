@@ -150,8 +150,6 @@ def predict(ticker, forecast_days=30):
             'forecast_data': forecast.tolist(),
             'sentiment': float(sentiment),
             'news_data': news_data[:10],
-            'last_close_price': float(data['Close'].iloc[-1]),
-            'next_day_prediction': float(forecast[0])
         }
 
     except Exception as e:
